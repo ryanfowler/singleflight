@@ -31,12 +31,10 @@ func (g *Group[K, V]) Do(
 	key K,
 	fn func(context.Context) (V, error),
 ) (v V, err error, shared bool)
-
-func (g *Group[K, V]) Forget(key K)
 ```
 
 The zero value of `Group` is ready to use. There is no constructor, no
-`DoChan`, and no public result wrapper type.
+`DoChan`, no `Forget`, and no public result wrapper type.
 
 Most callers can ignore the third return value. It mirrors
 `golang.org/x/sync/singleflight`: `shared` reports whether the call joined or
