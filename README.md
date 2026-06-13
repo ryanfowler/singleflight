@@ -1,12 +1,12 @@
 # singleflight
 
-Generic, context-aware duplicate call suppression for Go.
+A faster, generic, context-aware singleflight for Go.
 
 This module mirrors the core behavior of `golang.org/x/sync/singleflight`
-while using generic key and value types and a single context-aware `Do` method.
-The first caller for a key runs the function in the caller's goroutine; duplicate
-callers wait for the shared result or return early when their own context is
-canceled.
+while using generic key and value types, a single context-aware `Do` method,
+and fewer allocations. The first caller for a key runs the function in the
+caller's goroutine; duplicate callers wait for the shared result or return
+early when their own context is canceled.
 
 ```go
 var group singleflight.Group[string, User]
