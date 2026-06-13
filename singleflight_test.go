@@ -80,6 +80,157 @@ func TestGenericKeyAndValue(t *testing.T) {
 	}
 }
 
+func TestZeroValueShardedGroup(t *testing.T) {
+	var g ShardedGroup[string, int]
+	var calls int
+
+	v, err, shared := g.Do(context.Background(), "key", func(context.Context) (int, error) {
+		calls++
+		return 42, nil
+	})
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	if v != 42 {
+		t.Fatalf("Do returned value %d, want 42", v)
+	}
+	if shared {
+		t.Fatal("first call returned shared=true, want false")
+	}
+	if calls != 1 {
+		t.Fatalf("fn called %d times, want 1", calls)
+	}
+	if len(g.shards) != defaultShardCount {
+		t.Fatalf("len(g.shards) = %d, want %d", len(g.shards), defaultShardCount)
+	}
+	shard := g.groupFor("key")
+	found := false
+	for i := range g.shards {
+		if shard == &g.shards[i] {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("zero value ShardedGroup routed outside default shards")
+	}
+}
+
+func TestNewShardedGroupRequiresPositiveShardCount(t *testing.T) {
+	for _, shards := range []int{0, -1} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("NewShardedGroup(%d) did not panic", shards)
+				}
+			}()
+			_ = NewShardedGroup[string, int](shards)
+		}()
+	}
+}
+
+func TestShardedGroupGenericKeyAndValue(t *testing.T) {
+	type key struct {
+		ID   int
+		Name string
+	}
+	type value struct {
+		Message string
+	}
+
+	g := NewShardedGroup[key, value](8)
+	v, err, shared := g.Do(context.Background(), key{ID: 1, Name: "a"}, func(context.Context) (value, error) {
+		return value{Message: "typed"}, nil
+	})
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	if v.Message != "typed" {
+		t.Fatalf("Do returned value %#v, want typed message", v)
+	}
+	if shared {
+		t.Fatal("Do returned shared=true, want false")
+	}
+}
+
+func TestShardedGroupRoutesSameKeyToSameShard(t *testing.T) {
+	g := NewShardedGroup[int, int](16)
+	if len(g.shards) != 16 {
+		t.Fatalf("len(g.shards) = %d, want 16", len(g.shards))
+	}
+
+	first := g.groupFor(42)
+	second := g.groupFor(42)
+	if first != second {
+		t.Fatal("same key routed to different shards")
+	}
+
+	found := false
+	for i := range g.shards {
+		if first == &g.shards[i] {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("key routed outside configured shards")
+	}
+}
+
+func TestShardedGroupDuplicateSuppression(t *testing.T) {
+	g := NewShardedGroup[string, string](8)
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	leaderDone := make(chan doResult[string], 1)
+	duplicateDone := make(chan doResult[string], 1)
+
+	go func() {
+		v, err, shared := g.Do(context.Background(), "key", func(context.Context) (string, error) {
+			calls.Add(1)
+			close(started)
+			<-release
+			return "first", nil
+		})
+		leaderDone <- doResult[string]{val: v, err: err, shared: shared}
+	}()
+
+	<-started
+
+	go func() {
+		v, err, shared := g.Do(context.Background(), "key", func(context.Context) (string, error) {
+			calls.Add(1)
+			return "second", nil
+		})
+		duplicateDone <- doResult[string]{val: v, err: err, shared: shared}
+	}()
+
+	waitForWaiters(t, g.groupFor("key"), "key", 1)
+	close(release)
+
+	leader := receiveResult(t, leaderDone)
+	duplicate := receiveResult(t, duplicateDone)
+
+	if calls.Load() != 1 {
+		t.Fatalf("fn called %d times, want 1", calls.Load())
+	}
+	if leader.err != nil {
+		t.Fatalf("leader returned error: %v", leader.err)
+	}
+	if duplicate.err != nil {
+		t.Fatalf("duplicate returned error: %v", duplicate.err)
+	}
+	if leader.val != "first" || duplicate.val != "first" {
+		t.Fatalf("values = %q, %q; want first, first", leader.val, duplicate.val)
+	}
+	if !leader.shared {
+		t.Fatal("leader returned shared=false, want true")
+	}
+	if !duplicate.shared {
+		t.Fatal("duplicate returned shared=false, want true")
+	}
+}
+
 func TestDuplicateSuppression(t *testing.T) {
 	var g Group[string, string]
 	var calls atomic.Int32
