@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -135,6 +134,60 @@ func TestDuplicateSuppression(t *testing.T) {
 	}
 }
 
+func TestCallCreatedOnSecondCaller(t *testing.T) {
+	var g Group[string, int]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	leaderDone := make(chan doResult[int], 1)
+	duplicateDone := make(chan doResult[int], 1)
+
+	go func() {
+		v, err, shared := g.Do(context.Background(), "key", func(context.Context) (int, error) {
+			close(started)
+			<-release
+			return 1, nil
+		})
+		leaderDone <- doResult[int]{val: v, err: err, shared: shared}
+	}()
+	<-started
+
+	g.mu.Lock()
+	c, ok := g.m["key"]
+	if !ok {
+		t.Fatal("in-flight call was not registered")
+	}
+	if c != nil {
+		t.Fatal("call was created before a duplicate caller joined")
+	}
+	g.mu.Unlock()
+
+	go func() {
+		v, err, shared := g.Do(context.Background(), "key", func(context.Context) (int, error) {
+			return 2, nil
+		})
+		duplicateDone <- doResult[int]{val: v, err: err, shared: shared}
+	}()
+
+	waitForWaiters(t, &g, "key", 1)
+	g.mu.Lock()
+	c = g.m["key"]
+	if c == nil {
+		t.Fatal("call was not created after a duplicate caller joined")
+	}
+	g.mu.Unlock()
+
+	close(release)
+
+	leader := receiveResult(t, leaderDone)
+	duplicate := receiveResult(t, duplicateDone)
+	if leader.val != 1 || leader.err != nil || !leader.shared {
+		t.Fatalf("leader result = %#v, want 1 nil true", leader)
+	}
+	if duplicate.val != 1 || duplicate.err != nil || !duplicate.shared {
+		t.Fatalf("duplicate result = %#v, want 1 nil true", duplicate)
+	}
+}
+
 func TestDistinctKeysDoNotBlockEachOther(t *testing.T) {
 	var g Group[string, string]
 	started := make(chan struct{})
@@ -246,81 +299,6 @@ func TestCooperativeLeaderCancellation(t *testing.T) {
 	}
 	if shared {
 		t.Fatal("shared = true, want false")
-	}
-}
-
-func TestForgetAllowsReplacementCall(t *testing.T) {
-	var g Group[string, string]
-	var calls atomic.Int32
-
-	oldStarted := make(chan struct{})
-	oldRelease := make(chan struct{})
-	oldDone := make(chan doResult[string], 1)
-	go func() {
-		v, err, shared := g.Do(context.Background(), "key", func(context.Context) (string, error) {
-			calls.Add(1)
-			close(oldStarted)
-			<-oldRelease
-			return "old", nil
-		})
-		oldDone <- doResult[string]{val: v, err: err, shared: shared}
-	}()
-	<-oldStarted
-
-	g.Forget("key")
-
-	newStarted := make(chan struct{})
-	newRelease := make(chan struct{})
-	newDone := make(chan doResult[string], 1)
-	go func() {
-		v, err, shared := g.Do(context.Background(), "key", func(context.Context) (string, error) {
-			calls.Add(1)
-			close(newStarted)
-			<-newRelease
-			return "new", nil
-		})
-		newDone <- doResult[string]{val: v, err: err, shared: shared}
-	}()
-	<-newStarted
-
-	close(oldRelease)
-	old := receiveResult(t, oldDone)
-	if old.err != nil {
-		t.Fatalf("old call returned error: %v", old.err)
-	}
-	if old.val != "old" {
-		t.Fatalf("old call returned %q, want old", old.val)
-	}
-
-	duplicateDone := make(chan doResult[string], 1)
-	go func() {
-		v, err, shared := g.Do(context.Background(), "key", func(context.Context) (string, error) {
-			calls.Add(1)
-			return "third", nil
-		})
-		duplicateDone <- doResult[string]{val: v, err: err, shared: shared}
-	}()
-
-	waitForWaiters(t, &g, "key", 1)
-	close(newRelease)
-
-	duplicate := receiveResult(t, duplicateDone)
-	newResult := receiveResult(t, newDone)
-
-	if duplicate.err != nil {
-		t.Fatalf("duplicate returned error: %v", duplicate.err)
-	}
-	if newResult.err != nil {
-		t.Fatalf("new call returned error: %v", newResult.err)
-	}
-	if duplicate.val != "new" || newResult.val != "new" {
-		t.Fatalf("values = %q, %q; want new, new", duplicate.val, newResult.val)
-	}
-	if !duplicate.shared || !newResult.shared {
-		t.Fatalf("shared flags = %v, %v; want true, true", duplicate.shared, newResult.shared)
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("fn called %d times, want 2", calls.Load())
 	}
 }
 
@@ -489,28 +467,6 @@ func TestManyIndependentKeys(t *testing.T) {
 	if calls.Load() != keys {
 		t.Fatalf("fn called %d times, want %d", calls.Load(), keys)
 	}
-}
-
-func TestForgetConcurrentWithDo(t *testing.T) {
-	var g Group[int, int]
-	var wg sync.WaitGroup
-
-	for i := 0; i < 1000; i++ {
-		key := i % 16
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			_, _, _ = g.Do(context.Background(), key, func(context.Context) (int, error) {
-				return key, nil
-			})
-		}()
-		go func() {
-			defer wg.Done()
-			g.Forget(key)
-		}()
-	}
-
-	wg.Wait()
 }
 
 func waitForWaiters[K comparable, V any](t *testing.T, g *Group[K, V], key K, want int) {

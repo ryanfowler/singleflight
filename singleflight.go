@@ -83,41 +83,37 @@ func (g *Group[K, V]) Do(ctx context.Context, key K, fn func(context.Context) (V
 			var zero V
 			return zero, err, true
 		}
-		c.waiters++
-		if c.done == nil {
-			c.done = make(chan struct{})
+		if c == nil {
+			c = &call[V]{
+				done:    make(chan struct{}),
+				waiters: 1,
+			}
+			g.m[key] = c
+		} else {
+			c.waiters++
 		}
 		done := c.done
 		g.mu.Unlock()
 		return g.wait(ctx, c, done)
 	}
-	c := new(call[V])
-	g.m[key] = c
+	// A nil call marks an in-flight leader with no duplicate waiters yet.
+	g.m[key] = nil
 	g.mu.Unlock()
 
-	return g.doCall(ctx, key, c, fn)
-}
-
-// Forget tells the singleflight group to forget about a key. Future calls to Do
-// for this key will call the function rather than waiting for an earlier call to
-// complete.
-func (g *Group[K, V]) Forget(key K) {
-	g.mu.Lock()
-	delete(g.m, key)
-	g.mu.Unlock()
+	return g.doCall(ctx, key, fn)
 }
 
 func (g *Group[K, V]) wait(ctx context.Context, c *call[V], done <-chan struct{}) (v V, err error, shared bool) {
 	select {
 	case <-done:
-		c.replay()
+		replay(c.err)
 		return c.val, c.err, true
 	case <-ctx.Done():
 		g.mu.Lock()
 		select {
 		case <-done:
 			g.mu.Unlock()
-			c.replay()
+			replay(c.err)
 			return c.val, c.err, true
 		default:
 		}
@@ -129,31 +125,30 @@ func (g *Group[K, V]) wait(ctx context.Context, c *call[V], done <-chan struct{}
 	}
 }
 
-func (g *Group[K, V]) doCall(ctx context.Context, key K, c *call[V], fn func(context.Context) (V, error)) (v V, err error, shared bool) {
+func (g *Group[K, V]) doCall(ctx context.Context, key K, fn func(context.Context) (V, error)) (v V, err error, shared bool) {
 	normalReturn := false
 	recovered := false
 
 	defer func() {
 		if !normalReturn && !recovered {
-			c.err = errGoexit
+			err = errGoexit
 		}
 
-		v, err = c.val, c.err
-		shared = g.finish(key, c)
+		shared = g.finish(key, v, err)
 
-		c.replay()
+		replay(err)
 	}()
 
 	func() {
 		defer func() {
 			if !normalReturn {
 				if r := recover(); r != nil {
-					c.err = newPanicError(r)
+					err = newPanicError(r)
 				}
 			}
 		}()
 
-		c.val, c.err = fn(ctx)
+		v, err = fn(ctx)
 		normalReturn = true
 	}()
 
@@ -161,27 +156,33 @@ func (g *Group[K, V]) doCall(ctx context.Context, key K, c *call[V], fn func(con
 		recovered = true
 	}
 
-	return c.val, c.err, false
+	return v, err, false
 }
 
-func (g *Group[K, V]) finish(key K, c *call[V]) bool {
+func (g *Group[K, V]) finish(key K, v V, err error) bool {
 	g.mu.Lock()
-	shared := c.waiters > 0
-	if g.m != nil && g.m[key] == c {
+	var c *call[V]
+	if g.m != nil {
+		c = g.m[key]
 		delete(g.m, key)
 	}
-	if c.done != nil {
+
+	shared := false
+	if c != nil {
+		c.val = v
+		c.err = err
+		shared = c.waiters > 0
 		close(c.done)
 	}
 	g.mu.Unlock()
 	return shared
 }
 
-func (c *call[V]) replay() {
-	if p, ok := c.err.(*panicError); ok {
+func replay(err error) {
+	if p, ok := err.(*panicError); ok {
 		panic(p)
 	}
-	if c.err == errGoexit {
+	if err == errGoexit {
 		runtime.Goexit()
 	}
 }

@@ -91,33 +91,3 @@ func BenchmarkCanceledDuplicate(b *testing.B) {
 	close(release)
 	<-leaderDone
 }
-
-func BenchmarkForget(b *testing.B) {
-	var g Group[int, int]
-	ctx := context.Background()
-
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_, _, _ = g.Do(ctx, i, func(context.Context) (int, error) {
-			return i, nil
-		})
-		g.Forget(i)
-	}
-}
-
-func BenchmarkForgetParallel(b *testing.B) {
-	var g Group[int, int]
-	ctx := context.Background()
-	var next atomic.Int64
-
-	b.ReportAllocs()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			key := int(next.Add(1))
-			_, _, _ = g.Do(ctx, key, func(context.Context) (int, error) {
-				return key, nil
-			})
-			g.Forget(key)
-		}
-	})
-}
