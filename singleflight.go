@@ -1,4 +1,8 @@
 // Package singleflight provides duplicate function call suppression.
+//
+// Use Group for most workloads. Use ShardedGroup when a Group is shared by many
+// goroutines that concurrently call Do with many distinct keys and profiling
+// shows contention on Group's internal bookkeeping lock.
 package singleflight
 
 import (
@@ -6,12 +10,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"runtime"
 	"runtime/debug"
 	"sync"
 )
 
 var errGoexit = errors.New("runtime.Goexit was called")
+
+const defaultShardCount = 32
 
 type panicError struct {
 	value any
@@ -50,11 +57,70 @@ type call[V any] struct {
 // Group represents a class of work and forms a namespace in which units of work
 // can be executed with duplicate suppression.
 //
+// Group is the right default for most callers. It has the least per-call
+// overhead and suppresses duplicate work for each key with a single internal
+// map and lock.
+//
 // The zero value of Group is ready to use.
 // A Group must not be copied after first use.
 type Group[K comparable, V any] struct {
 	mu sync.Mutex
 	m  map[K]*call[V]
+}
+
+// ShardedGroup represents a class of work split across multiple internal
+// Groups. Keys are hashed with hash/maphash and routed to one shard before
+// duplicate suppression is applied.
+//
+// ShardedGroup is useful when many goroutines concurrently call Do with many
+// distinct keys. In that workload, sharding spreads the internal map and lock
+// traffic across multiple Groups and can reduce contention. It does not improve
+// duplicate suppression for a single hot key, because equal keys always route
+// to the same shard, and it adds hash/routing overhead to each call.
+//
+// The zero value of ShardedGroup is ready to use with 32 shards. Use
+// NewShardedGroup to create a group with a specific shard count.
+// A ShardedGroup must not be copied after first use.
+type ShardedGroup[K comparable, V any] struct {
+	initOnce sync.Once
+	seed     maphash.Seed
+
+	shards []Group[K, V]
+}
+
+// NewShardedGroup returns a ShardedGroup with shards internal Groups.
+//
+// Pick a shard count high enough to spread expected distinct-key concurrency,
+// but not so high that mostly idle shards waste memory. The zero value uses 32
+// shards, which is a reasonable default for highly concurrent servers. It
+// panics if shards is not positive.
+func NewShardedGroup[K comparable, V any](shards int) *ShardedGroup[K, V] {
+	if shards <= 0 {
+		panic("singleflight: shard count must be positive")
+	}
+	return &ShardedGroup[K, V]{
+		shards: make([]Group[K, V], shards),
+	}
+}
+
+// Do executes and returns the results of the given function, making sure that
+// only one execution is in-flight for a given key at a time within the selected
+// shard.
+//
+// ShardedGroup.Do has the same duplicate suppression and cancellation behavior
+// as Group.Do.
+func (g *ShardedGroup[K, V]) Do(ctx context.Context, key K, fn func(context.Context) (V, error)) (v V, err error, shared bool) {
+	return g.groupFor(key).Do(ctx, key, fn)
+}
+
+func (g *ShardedGroup[K, V]) groupFor(key K) *Group[K, V] {
+	g.initOnce.Do(func() {
+		g.seed = maphash.MakeSeed()
+		if g.shards == nil {
+			g.shards = make([]Group[K, V], defaultShardCount)
+		}
+	})
+	return &g.shards[maphash.Comparable(g.seed, key)%uint64(len(g.shards))]
 }
 
 // Do executes and returns the results of the given function, making sure that
