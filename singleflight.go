@@ -127,11 +127,14 @@ func (g *Group[K, V]) wait(ctx context.Context, c *call[V], done <-chan struct{}
 
 func (g *Group[K, V]) doCall(ctx context.Context, key K, fn func(context.Context) (V, error)) (v V, err error, shared bool) {
 	normalReturn := false
-	recovered := false
 
 	defer func() {
-		if !normalReturn && !recovered {
-			err = errGoexit
+		if !normalReturn {
+			if r := recover(); r != nil {
+				err = newPanicError(r)
+			} else {
+				err = errGoexit
+			}
 		}
 
 		shared = g.finish(key, v, err)
@@ -139,22 +142,8 @@ func (g *Group[K, V]) doCall(ctx context.Context, key K, fn func(context.Context
 		replay(err)
 	}()
 
-	func() {
-		defer func() {
-			if !normalReturn {
-				if r := recover(); r != nil {
-					err = newPanicError(r)
-				}
-			}
-		}()
-
-		v, err = fn(ctx)
-		normalReturn = true
-	}()
-
-	if !normalReturn {
-		recovered = true
-	}
+	v, err = fn(ctx)
+	normalReturn = true
 
 	return v, err, false
 }

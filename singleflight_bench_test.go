@@ -22,6 +22,22 @@ func BenchmarkDoUncontended(b *testing.B) {
 	}
 }
 
+func BenchmarkDoSameKeySequential(b *testing.B) {
+	var g Group[string, int]
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v, err, shared := g.Do(ctx, "key", func(context.Context) (int, error) {
+			return 1, nil
+		})
+		if err != nil || shared || v != 1 {
+			b.Fatalf("Do() = %d, %v, %v; want 1, nil, false", v, err, shared)
+		}
+	}
+}
+
 func BenchmarkDoHotKeyParallel(b *testing.B) {
 	var g Group[string, int]
 	ctx := context.Background()
