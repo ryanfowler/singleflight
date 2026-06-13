@@ -337,6 +337,41 @@ func TestPanicReplay(t *testing.T) {
 	assertPanicError(t, receiveAny(t, duplicatePanic), "boom")
 }
 
+func TestPanicNilReplay(t *testing.T) {
+	var g Group[string, int]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	leaderPanic := make(chan any, 1)
+	duplicatePanic := make(chan any, 1)
+
+	go func() {
+		defer func() {
+			leaderPanic <- recover()
+		}()
+		_, _, _ = g.Do(context.Background(), "key", func(context.Context) (int, error) {
+			close(started)
+			<-release
+			panic(nil)
+		})
+	}()
+	<-started
+
+	go func() {
+		defer func() {
+			duplicatePanic <- recover()
+		}()
+		_, _, _ = g.Do(context.Background(), "key", func(context.Context) (int, error) {
+			return 2, nil
+		})
+	}()
+
+	waitForWaiters(t, &g, "key", 1)
+	close(release)
+
+	assertPanicError(t, receiveAny(t, leaderPanic), "panic called with nil argument")
+	assertPanicError(t, receiveAny(t, duplicatePanic), "panic called with nil argument")
+}
+
 func TestGoexitReplayAndCleanup(t *testing.T) {
 	var g Group[string, int]
 	started := make(chan struct{})
