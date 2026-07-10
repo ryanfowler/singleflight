@@ -2,6 +2,7 @@ package singleflight
 
 import (
 	"context"
+	"strconv"
 	"sync/atomic"
 	"testing"
 )
@@ -10,12 +11,13 @@ func BenchmarkDoUncontended(b *testing.B) {
 	ctx := context.Background()
 
 	b.Run("impl=Group", func(b *testing.B) {
-		var g Group[int, int]
+		var g Group[string, int]
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			v, err, shared := g.Do(ctx, i, func(context.Context) (int, error) {
+			key := strconv.Itoa(i)
+			v, err, shared := g.Do(ctx, key, func(context.Context) (int, error) {
 				return i, nil
 			})
 			if err != nil || shared || v != i {
@@ -25,12 +27,13 @@ func BenchmarkDoUncontended(b *testing.B) {
 	})
 
 	b.Run("impl=ShardedGroup32", func(b *testing.B) {
-		g := NewShardedGroup[int, int](defaultShardCount)
+		g := NewShardedGroup[string, int](defaultShardCount)
 
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			v, err, shared := g.Do(ctx, i, func(context.Context) (int, error) {
+			key := strconv.Itoa(i)
+			v, err, shared := g.Do(ctx, key, func(context.Context) (int, error) {
 				return i, nil
 			})
 			if err != nil || shared || v != i {
@@ -114,36 +117,38 @@ func BenchmarkDoManyKeysParallel(b *testing.B) {
 	ctx := context.Background()
 
 	b.Run("impl=Group", func(b *testing.B) {
-		var g Group[int, int]
+		var g Group[string, int]
 		var next atomic.Int64
 
 		b.ReportAllocs()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				key := int(next.Add(1))
+				i := int(next.Add(1))
+				key := strconv.Itoa(i)
 				v, err, shared := g.Do(ctx, key, func(context.Context) (int, error) {
-					return key, nil
+					return i, nil
 				})
-				if err != nil || shared || v != key {
-					b.Fatalf("Do() = %d, %v, %v; want %d, nil, false", v, err, shared, key)
+				if err != nil || shared || v != i {
+					b.Fatalf("Do() = %d, %v, %v; want %d, nil, false", v, err, shared, i)
 				}
 			}
 		})
 	})
 
 	b.Run("impl=ShardedGroup32", func(b *testing.B) {
-		g := NewShardedGroup[int, int](defaultShardCount)
+		g := NewShardedGroup[string, int](defaultShardCount)
 		var next atomic.Int64
 
 		b.ReportAllocs()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				key := int(next.Add(1))
+				i := int(next.Add(1))
+				key := strconv.Itoa(i)
 				v, err, shared := g.Do(ctx, key, func(context.Context) (int, error) {
-					return key, nil
+					return i, nil
 				})
-				if err != nil || shared || v != key {
-					b.Fatalf("Do() = %d, %v, %v; want %d, nil, false", v, err, shared, key)
+				if err != nil || shared || v != i {
+					b.Fatalf("Do() = %d, %v, %v; want %d, nil, false", v, err, shared, i)
 				}
 			}
 		})

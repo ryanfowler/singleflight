@@ -30,7 +30,7 @@ with a smaller, typed API:
 - one context-aware `Do` method;
 - a lower-overhead synchronous path for callers that only need `Do`;
 - no result wrapper or `any` casts;
-- no external dependencies;
+- no runtime dependencies;
 - a `ShardedGroup` option for high-concurrency, many-key workloads.
 
 The first caller for a key runs the function in that caller's goroutine.
@@ -40,9 +40,10 @@ context is canceled before the original call completes.
 For the common uncontended path, `Group` avoids allocating duplicate-waiter
 state unless a second caller actually joins an in-flight call. The narrower API
 also avoids the public `Result` wrapper and `any` result plumbing used by
-`x/sync/singleflight`. The repository includes benchmarks for uncontended calls,
-sequential hot-key calls, hot-key parallel calls, many-key parallel calls, and
-canceled duplicate callers.
+`x/sync/singleflight`. The repository includes equivalent `x/sync/singleflight`
+benchmarks for uncontended calls, sequential hot-key calls, hot-key parallel
+calls, and many-key parallel calls, as well as a canceled-duplicate benchmark
+for this package's context-aware waiting.
 
 ## Install
 
@@ -235,14 +236,34 @@ duplicates, avoiding result boxing, and exposing concrete typed values directly.
 Choose `golang.org/x/sync/singleflight` when you need its broader API surface,
 such as `DoChan`, `Forget`, or the public `Result` type.
 
+### Benchmarks
+
+The repository benchmarks equivalent `Do` workloads against
+`golang.org/x/sync/singleflight` v0.16.0. Representative medians from three
+runs on an Apple M2 Pro with Go 1.26.5 (`GOMAXPROCS=10`) are:
+
+| Workload | Group | ShardedGroup (32) | x/sync Group |
+| --- | ---: | ---: | ---: |
+| Uncontended distinct keys | 57.7 ns/op, 0 allocs/op | 75.9 ns/op, 0 allocs/op | 90.4 ns/op, 2 allocs/op |
+| Sequential hot key | 45.8 ns/op, 0 allocs/op | 52.3 ns/op, 0 allocs/op | 68.4 ns/op, 1 alloc/op |
+| Parallel hot key | 291.6 ns/op, 0 allocs/op | 320.7 ns/op, 0 allocs/op | 379.9 ns/op, 0 allocs/op |
+| Parallel distinct keys | 315.5 ns/op, 0 allocs/op | 114.7 ns/op, 1 alloc/op | 392.7 ns/op, 2 allocs/op |
+
+These are microbenchmarks, not a substitute for measuring an application's
+workload. `x/sync/singleflight` has no context-aware waiter API, so the
+canceled-duplicate benchmark has no equivalent comparison. Reproduce the
+comparison with:
+
+```sh
+GOMAXPROCS=10 go test -run='^$' \
+  -bench='(DoUncontended|DoSameKeySequential|DoHotKeyParallel|DoManyKeysParallel)$' \
+  -benchmem -count=3
+```
+
 Within this package, `Group` is usually fastest when there is little cross-key
 lock contention. `ShardedGroup` can win when many goroutines concurrently use
 many distinct keys, but it adds hashing overhead and is usually not faster for
-mostly sequential workloads or a single hot key. Benchmark your workload with:
-
-```sh
-go test -bench=. -benchmem
-```
+mostly sequential workloads or a single hot key.
 
 ## License
 
