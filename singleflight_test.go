@@ -771,8 +771,15 @@ func assertPanicError(t *testing.T, recovered any, want string) {
 	if recovered == nil {
 		t.Fatal("expected panic, got nil")
 	}
-	if _, ok := recovered.(*panicError); !ok {
-		t.Fatalf("panic type = %T, want *panicError", recovered)
+	p, ok := recovered.(*PanicError)
+	if !ok {
+		t.Fatalf("panic type = %T, want *PanicError", recovered)
+	}
+	if !strings.Contains(fmt.Sprint(p.Value()), want) {
+		t.Fatalf("panic value = %v, want substring %q", p.Value(), want)
+	}
+	if len(p.Stack()) == 0 {
+		t.Fatal("panic stack is empty")
 	}
 	if !strings.Contains(fmt.Sprint(recovered), want) {
 		t.Fatalf("panic = %v, want substring %q", recovered, want)

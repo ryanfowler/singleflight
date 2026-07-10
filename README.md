@@ -215,8 +215,15 @@ one internal `Group`, and sharding adds a small hash/routing cost to every call.
 ## Panics and `runtime.Goexit`
 
 If `fn` panics or calls `runtime.Goexit`, the group cleans up its internal state
-and replays that behavior to waiting duplicate callers. This keeps future calls
-for the same key from getting stuck behind a failed in-flight operation.
+and propagates that behavior to every participating caller. This keeps future
+calls for the same key from getting stuck behind a failed in-flight operation.
+
+Panics are **not** replayed as their original values. `Do` recovers the panic,
+captures its stack, and panics with a `*singleflight.PanicError` for both the
+caller that ran `fn` and all waiting duplicate callers. Use `Value` to inspect
+the original panic value and `Stack` to inspect the captured stack. If `fn`
+calls `runtime.Goexit`, `Do` calls `runtime.Goexit` in every participating
+caller.
 
 ## Comparison With `x/sync/singleflight`
 

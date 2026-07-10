@@ -59,6 +59,12 @@ type call[V any] struct {
 // work. Duplicate callers return shared=true. The caller running fn returns
 // shared=true only when at least one duplicate caller is still waiting when fn
 // completes.
+//
+// If fn panics, Do panics with a *PanicError containing the original panic
+// value and a stack captured at the panic. The same *PanicError is re-panicked
+// in every caller participating in that invocation; it does not replay the
+// original panic value directly. If fn calls runtime.Goexit, Do calls
+// runtime.Goexit in every participating caller.
 func (g *Group[K, V]) Do(ctx context.Context, key K, fn func(context.Context) (V, error)) (v V, err error, shared bool) {
 	g.mu.Lock()
 	if g.m == nil {
@@ -227,7 +233,7 @@ func (g *ShardedGroup[K, V]) groupFor(key K) *Group[K, V] {
 }
 
 func replay(err error) {
-	if p, ok := err.(*panicError); ok {
+	if p, ok := err.(*PanicError); ok {
 		panic(p)
 	}
 	if err == errGoexit {
@@ -239,24 +245,40 @@ var errGoexit = errors.New("runtime.Goexit was called")
 
 const defaultShardCount = 32
 
-type panicError struct {
+// PanicError is panicked by Do when its function panics. It wraps the
+// original panic value and the stack captured when that panic was recovered.
+//
+// A PanicError is re-panicked for both the caller that ran the function and
+// every duplicate caller waiting for that invocation.
+type PanicError struct {
 	value any
 	stack []byte
 }
 
-func newPanicError(v any) *panicError {
+func newPanicError(v any) *PanicError {
 	stack := debug.Stack()
 	if line := bytes.IndexByte(stack, '\n'); line >= 0 {
 		stack = stack[line+1:]
 	}
-	return &panicError{value: v, stack: stack}
+	return &PanicError{value: v, stack: stack}
 }
 
-func (p *panicError) Error() string {
+// Value returns the value originally supplied to panic.
+func (p *PanicError) Value() any {
+	return p.value
+}
+
+// Stack returns a copy of the stack captured when the panic was recovered.
+func (p *PanicError) Stack() []byte {
+	return append([]byte(nil), p.stack...)
+}
+
+func (p *PanicError) Error() string {
 	return fmt.Sprintf("%v\n\n%s", p.value, p.stack)
 }
 
-func (p *panicError) Unwrap() error {
+// Unwrap returns the original panic value when it is an error.
+func (p *PanicError) Unwrap() error {
 	err, ok := p.value.(error)
 	if !ok {
 		return nil
