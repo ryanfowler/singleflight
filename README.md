@@ -133,15 +133,23 @@ value, err, _ := group.Do(ctx, key, fn)
 
 ## Context Cancellation
 
-Cancellation is per caller.
+Duplicate callers can cancel independently while waiting.
 
 If a duplicate caller's context is canceled while it is waiting, that caller
 returns the zero value, `ctx.Err()`, and `shared=true`. The original operation
 continues for any remaining callers.
 
-The first caller for a key runs `fn` synchronously. `Do` passes the context to
-`fn`, but it cannot forcibly stop `fn`; leader cancellation is cooperative, so
+The first caller for a key runs `fn` synchronously, and its context is the
+context passed to `fn`. Therefore, the first caller's context governs the
+shared operation: if it is canceled and `fn` returns a cancellation error, all
+callers still waiting receive that same error, even when their own contexts are
+active. `Do` cannot forcibly stop `fn`; leader cancellation is cooperative, so
 `fn` must observe `ctx` and return.
+
+For cache fills or other work that should outlive an individual request, pass
+`Do` a context with a lifetime appropriate for the shared operation (for
+example, a service context with a bounded timeout), rather than a request
+context.
 
 ```go
 value, err, _ := group.Do(ctx, key, func(ctx context.Context) (Value, error) {

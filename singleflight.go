@@ -44,9 +44,11 @@ type call[V any] struct {
 // complete and receives the same result. A duplicate caller may return early if
 // its context is canceled before the original call completes.
 //
-// The first caller for a key runs fn synchronously in the caller's goroutine.
-// Its context cancellation is therefore cooperative: fn must observe ctx and
-// return for Do to return due to cancellation.
+// The first caller for a key runs fn synchronously in the caller's goroutine,
+// and its context is passed to fn. Thus, that context governs the shared
+// operation: if fn returns its cancellation error, all callers still waiting
+// receive that result. Its cancellation is cooperative: fn must observe ctx
+// and return for Do to return due to cancellation.
 //
 // The returned shared value reports whether this call joined or served shared
 // work. Duplicate callers return shared=true. The caller running fn returns
