@@ -442,6 +442,42 @@ func TestDuplicateContextCancellation(t *testing.T) {
 	}
 }
 
+// A synchronous same-key recursive call waits for its caller. A cancelable
+// nested context can release it, but callers must avoid this pattern.
+func TestSameKeyRecursiveCallCanBeReleasedByCancellation(t *testing.T) {
+	var g Group[string, int]
+	nestedCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nestedStarting := make(chan struct{})
+	done := make(chan doResult[int], 1)
+	go func() {
+		v, err, shared := g.Do(context.Background(), "key", func(context.Context) (int, error) {
+			close(nestedStarting)
+			v, err, _ := g.Do(nestedCtx, "key", func(context.Context) (int, error) {
+				return 2, nil
+			})
+			return v, err
+		})
+		done <- doResult[int]{val: v, err: err, shared: shared}
+	}()
+
+	<-nestedStarting
+	waitForWaiters(t, &g, "key", 1)
+	cancel()
+
+	result := receiveResult(t, done)
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("recursive Do error = %v, want context.Canceled", result.err)
+	}
+	if result.val != 0 {
+		t.Fatalf("recursive Do value = %d, want zero", result.val)
+	}
+	if result.shared {
+		t.Fatal("outer Do returned shared=true after nested call canceled, want false")
+	}
+}
+
 func TestCooperativeLeaderCancellation(t *testing.T) {
 	var g Group[string, int]
 	ctx, cancel := context.WithCancel(context.Background())

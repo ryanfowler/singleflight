@@ -131,6 +131,13 @@ Most application code can ignore it:
 value, err, _ := group.Do(ctx, key, fn)
 ```
 
+### Recursive Calls
+
+`fn` must not synchronously call `Do` on the same group with the same key. The
+nested call waits for the outer `fn` to return, while the outer `fn` waits for
+the nested call, causing a deadlock. A cancelable context can release the
+nested call, but code should avoid this pattern.
+
 ## Context Cancellation
 
 Duplicate callers can cancel independently while waiting.
