@@ -44,6 +44,11 @@ type call[V any] struct {
 // complete and receives the same result. A duplicate caller may return early if
 // its context is canceled before the original call completes.
 //
+// fn must not synchronously call Do on the same Group with the same key. Such
+// a recursive call waits for fn to return, while fn waits for the recursive
+// call, causing a deadlock. A cancelable context can release the recursive
+// call, but callers should avoid this pattern.
+//
 // The first caller for a key runs fn synchronously in the caller's goroutine,
 // and its context is passed to fn. Thus, that context governs the shared
 // operation: if fn returns its cancellation error, all callers still waiting
