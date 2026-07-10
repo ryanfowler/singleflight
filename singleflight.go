@@ -159,12 +159,23 @@ func (g *Group[K, V]) finish(key K, v V, err error) bool {
 //
 // The zero value of ShardedGroup is ready to use with 32 shards. Use
 // NewShardedGroup to create a group with a specific shard count.
-// A ShardedGroup must not be copied after first use.
+//
+// A ShardedGroup must not be copied. NewShardedGroup returns a pointer, which
+// should be retained and used by all callers.
 type ShardedGroup[K comparable, V any] struct {
+	state *shardedGroupState[K, V]
+
+	// zeroState provides storage for the zero value without requiring a heap
+	// allocation until the ShardedGroup itself escapes. Constructed groups use
+	// state so that the seed and shards remain shared if the value is
+	// accidentally copied before first use.
+	zeroState shardedGroupState[K, V]
+}
+
+type shardedGroupState[K comparable, V any] struct {
 	initOnce sync.Once
 	seed     maphash.Seed
-
-	shards []Group[K, V]
+	shards   []Group[K, V]
 }
 
 // NewShardedGroup returns a ShardedGroup with shards internal Groups.
@@ -178,7 +189,9 @@ func NewShardedGroup[K comparable, V any](shards int) *ShardedGroup[K, V] {
 		panic("singleflight: shard count must be positive")
 	}
 	return &ShardedGroup[K, V]{
-		shards: make([]Group[K, V], shards),
+		state: &shardedGroupState[K, V]{
+			shards: make([]Group[K, V], shards),
+		},
 	}
 }
 
@@ -193,13 +206,17 @@ func (g *ShardedGroup[K, V]) Do(ctx context.Context, key K, fn func(context.Cont
 }
 
 func (g *ShardedGroup[K, V]) groupFor(key K) *Group[K, V] {
-	g.initOnce.Do(func() {
-		g.seed = maphash.MakeSeed()
-		if g.shards == nil {
-			g.shards = make([]Group[K, V], defaultShardCount)
+	state := g.state
+	if state == nil {
+		state = &g.zeroState
+	}
+	state.initOnce.Do(func() {
+		state.seed = maphash.MakeSeed()
+		if state.shards == nil {
+			state.shards = make([]Group[K, V], defaultShardCount)
 		}
 	})
-	return &g.shards[maphash.Comparable(g.seed, key)%uint64(len(g.shards))]
+	return &state.shards[maphash.Comparable(state.seed, key)%uint64(len(state.shards))]
 }
 
 func replay(err error) {

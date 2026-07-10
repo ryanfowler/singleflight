@@ -190,7 +190,8 @@ func (g *ShardedGroup[K, V]) Do(
 
 The zero value of `ShardedGroup` is ready to use with 32 shards. Use
 `NewShardedGroup` when you want a specific shard count. The shard count must be
-positive.
+positive. A `ShardedGroup` must not be copied; retain and use the pointer
+returned by `NewShardedGroup`.
 
 `ShardedGroup` does not help a workload dominated by a single hot key. Equal
 keys always route to the same shard so duplicate suppression still happens in

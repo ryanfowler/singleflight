@@ -100,13 +100,13 @@ func TestZeroValueShardedGroup(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("fn called %d times, want 1", calls)
 	}
-	if len(g.shards) != defaultShardCount {
-		t.Fatalf("len(g.shards) = %d, want %d", len(g.shards), defaultShardCount)
+	if len(g.zeroState.shards) != defaultShardCount {
+		t.Fatalf("len(g.zeroState.shards) = %d, want %d", len(g.zeroState.shards), defaultShardCount)
 	}
 	shard := g.groupFor("key")
 	found := false
-	for i := range g.shards {
-		if shard == &g.shards[i] {
+	for i := range g.zeroState.shards {
+		if shard == &g.zeroState.shards[i] {
 			found = true
 			break
 		}
@@ -155,8 +155,8 @@ func TestShardedGroupGenericKeyAndValue(t *testing.T) {
 
 func TestShardedGroupRoutesSameKeyToSameShard(t *testing.T) {
 	g := NewShardedGroup[int, int](16)
-	if len(g.shards) != 16 {
-		t.Fatalf("len(g.shards) = %d, want 16", len(g.shards))
+	if len(g.state.shards) != 16 {
+		t.Fatalf("len(g.state.shards) = %d, want 16", len(g.state.shards))
 	}
 
 	first := g.groupFor(42)
@@ -166,14 +166,28 @@ func TestShardedGroupRoutesSameKeyToSameShard(t *testing.T) {
 	}
 
 	found := false
-	for i := range g.shards {
-		if first == &g.shards[i] {
+	for i := range g.state.shards {
+		if first == &g.state.shards[i] {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Fatal("key routed outside configured shards")
+	}
+}
+
+func TestConstructedShardedGroupSharesRoutingState(t *testing.T) {
+	original := NewShardedGroup[string, int](16)
+	// Model the relevant result of an accidental pre-use copy without copying
+	// zeroState's sync.Once (which go vet correctly rejects).
+	copied := ShardedGroup[string, int]{state: original.state}
+
+	if copied.state != original.state {
+		t.Fatal("copy does not share routing state")
+	}
+	if got, want := copied.groupFor("key"), original.groupFor("key"); got != want {
+		t.Fatal("copy routed the same key to a different shard")
 	}
 }
 
