@@ -191,7 +191,7 @@ type shardedGroupState[K comparable, V any] struct {
 	shards   []Group[K, V]
 }
 
-// NewShardedGroup returns a ShardedGroup with shards internal Groups.
+// NewShardedGroup returns a ShardedGroup with the requested number of internal Groups.
 //
 // Pick a shard count high enough to spread expected distinct-key concurrency,
 // but not so high that mostly idle shards waste memory. The zero value uses 32
