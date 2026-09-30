@@ -573,6 +573,77 @@ func TestPanicNilReplay(t *testing.T) {
 	assertPanicError(t, receiveAny(t, duplicatePanic), "panic called with nil argument")
 }
 
+// A *PanicError returned by fn as an ordinary error, such as one recovered
+// from a nested Do, must be returned rather than re-panicked.
+func TestReturnedPanicErrorIsNotReplayed(t *testing.T) {
+	var g Group[string, int]
+	var inner Group[string, int]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	leaderDone := make(chan doResult[int], 1)
+	duplicateDone := make(chan doResult[int], 1)
+	leaderPanic := make(chan any, 1)
+	duplicatePanic := make(chan any, 1)
+
+	go func() {
+		defer func() {
+			leaderPanic <- recover()
+		}()
+		v, err, shared := g.Do(context.Background(), "key", func(ctx context.Context) (v int, err error) {
+			close(started)
+			<-release
+			defer func() {
+				if r := recover(); r != nil {
+					err = r.(*PanicError)
+				}
+			}()
+			v, err, _ = inner.Do(ctx, "inner", func(context.Context) (int, error) {
+				panic("boom")
+			})
+			return v, err
+		})
+		leaderDone <- doResult[int]{val: v, err: err, shared: shared}
+	}()
+	<-started
+
+	go func() {
+		defer func() {
+			duplicatePanic <- recover()
+		}()
+		v, err, shared := g.Do(context.Background(), "key", func(context.Context) (int, error) {
+			return 2, nil
+		})
+		duplicateDone <- doResult[int]{val: v, err: err, shared: shared}
+	}()
+
+	waitForWaiters(t, &g, "key", 1)
+	close(release)
+
+	for _, tc := range []struct {
+		name   string
+		done   <-chan doResult[int]
+		panics <-chan any
+	}{
+		{"leader", leaderDone, leaderPanic},
+		{"duplicate", duplicateDone, duplicatePanic},
+	} {
+		if r := receiveAny(t, tc.panics); r != nil {
+			t.Fatalf("%s Do panicked with %T, want returned error", tc.name, r)
+		}
+		result := receiveResult(t, tc.done)
+		var p *PanicError
+		if !errors.As(result.err, &p) {
+			t.Fatalf("%s error = %v, want *PanicError", tc.name, result.err)
+		}
+		if p.Value() != "boom" {
+			t.Fatalf("%s panic value = %v, want boom", tc.name, p.Value())
+		}
+		if !result.shared {
+			t.Fatalf("%s returned shared=false, want true", tc.name)
+		}
+	}
+}
+
 func TestGoexitReplayAndCleanup(t *testing.T) {
 	var g Group[string, int]
 	started := make(chan struct{})
