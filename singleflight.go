@@ -35,6 +35,10 @@ type call[V any] struct {
 	err     error
 	waiters int
 	done    chan struct{}
+
+	// aborted reports whether fn panicked or called runtime.Goexit, in which
+	// case err holds the *PanicError or errGoexit to replay.
+	aborted bool
 }
 
 // Do executes and returns the results of the given function, making sure that
@@ -99,14 +103,18 @@ func (g *Group[K, V]) Do(ctx context.Context, key K, fn func(context.Context) (V
 func (g *Group[K, V]) wait(ctx context.Context, c *call[V], done <-chan struct{}) (v V, err error, shared bool) {
 	select {
 	case <-done:
-		replay(c.err)
+		if c.aborted {
+			replay(c.err)
+		}
 		return c.val, c.err, true
 	case <-ctx.Done():
 		g.mu.Lock()
 		select {
 		case <-done:
 			g.mu.Unlock()
-			replay(c.err)
+			if c.aborted {
+				replay(c.err)
+			}
 			return c.val, c.err, true
 		default:
 		}
@@ -130,9 +138,11 @@ func (g *Group[K, V]) doCall(ctx context.Context, key K, fn func(context.Context
 			}
 		}
 
-		shared = g.finish(key, v, err)
+		shared = g.finish(key, v, err, !normalReturn)
 
-		replay(err)
+		if !normalReturn {
+			replay(err)
+		}
 	}()
 
 	v, err = fn(ctx)
@@ -141,7 +151,7 @@ func (g *Group[K, V]) doCall(ctx context.Context, key K, fn func(context.Context
 	return v, err, false
 }
 
-func (g *Group[K, V]) finish(key K, v V, err error) bool {
+func (g *Group[K, V]) finish(key K, v V, err error, aborted bool) bool {
 	g.mu.Lock()
 	var c *call[V]
 	if g.m != nil {
@@ -153,6 +163,7 @@ func (g *Group[K, V]) finish(key K, v V, err error) bool {
 	if c != nil {
 		c.val = v
 		c.err = err
+		c.aborted = aborted
 		shared = c.waiters > 0
 		close(c.done)
 	}
@@ -232,13 +243,14 @@ func (g *ShardedGroup[K, V]) groupFor(key K) *Group[K, V] {
 	return &state.shards[maphash.Comparable(state.seed, key)%uint64(len(state.shards))]
 }
 
+// replay re-raises an aborted call's panic or runtime.Goexit. It must only be
+// called for calls where fn did not return normally; a *PanicError returned by
+// fn as an ordinary error is not replayed.
 func replay(err error) {
 	if p, ok := err.(*PanicError); ok {
 		panic(p)
 	}
-	if err == errGoexit {
-		runtime.Goexit()
-	}
+	runtime.Goexit()
 }
 
 var errGoexit = errors.New("runtime.Goexit was called")
