@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sync"
+	"unsafe"
 )
 
 // Group represents a class of work and forms a namespace in which units of work
@@ -199,13 +200,26 @@ type ShardedGroup[K comparable, V any] struct {
 type shardedGroupState[K comparable, V any] struct {
 	initOnce sync.Once
 	seed     maphash.Seed
-	shards   []Group[K, V]
+	shards   []paddedGroup[K, V]
 }
+
+// paddedGroup gives each shard its own cache lines so that goroutines using
+// neighboring shards do not contend on the same line (false sharing).
+type paddedGroup[K comparable, V any] struct {
+	Group[K, V]
+	_ [shardPadding]byte
+}
+
+// shardPadding rounds a Group up to a multiple of 128 bytes, which covers
+// adjacent-line prefetching on x86 and 128-byte cache lines on some arm64 CPUs.
+// Group's size does not depend on its type parameters.
+const shardPadding = 128 - unsafe.Sizeof(Group[struct{}, struct{}]{})%128
 
 // NewShardedGroup returns a ShardedGroup with the requested number of internal Groups.
 //
 // Pick a shard count high enough to spread expected distinct-key concurrency,
-// but not so high that mostly idle shards waste memory. The zero value uses 32
+// but not so high that mostly idle shards waste memory; each shard occupies at
+// least 128 bytes to avoid false sharing. The zero value uses 32
 // shards, which is a reasonable default for highly concurrent servers. It
 // panics if shards is not positive.
 func NewShardedGroup[K comparable, V any](shards int) *ShardedGroup[K, V] {
@@ -214,7 +228,7 @@ func NewShardedGroup[K comparable, V any](shards int) *ShardedGroup[K, V] {
 	}
 	return &ShardedGroup[K, V]{
 		state: &shardedGroupState[K, V]{
-			shards: make([]Group[K, V], shards),
+			shards: make([]paddedGroup[K, V], shards),
 		},
 	}
 }
@@ -237,10 +251,10 @@ func (g *ShardedGroup[K, V]) groupFor(key K) *Group[K, V] {
 	state.initOnce.Do(func() {
 		state.seed = maphash.MakeSeed()
 		if state.shards == nil {
-			state.shards = make([]Group[K, V], defaultShardCount)
+			state.shards = make([]paddedGroup[K, V], defaultShardCount)
 		}
 	})
-	return &state.shards[maphash.Comparable(state.seed, key)%uint64(len(state.shards))]
+	return &state.shards[maphash.Comparable(state.seed, key)%uint64(len(state.shards))].Group
 }
 
 // replay re-raises an aborted call's panic or runtime.Goexit. It must only be

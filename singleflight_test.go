@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 type doResult[V any] struct {
@@ -106,7 +107,7 @@ func TestZeroValueShardedGroup(t *testing.T) {
 	shard := g.groupFor("key")
 	found := false
 	for i := range g.zeroState.shards {
-		if shard == &g.zeroState.shards[i] {
+		if shard == &g.zeroState.shards[i].Group {
 			found = true
 			break
 		}
@@ -167,13 +168,22 @@ func TestShardedGroupRoutesSameKeyToSameShard(t *testing.T) {
 
 	found := false
 	for i := range g.state.shards {
-		if first == &g.state.shards[i] {
+		if first == &g.state.shards[i].Group {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Fatal("key routed outside configured shards")
+	}
+}
+
+func TestShardsArePaddedToCacheLines(t *testing.T) {
+	if size := unsafe.Sizeof(paddedGroup[string, int]{}); size%128 != 0 {
+		t.Fatalf("unsafe.Sizeof(paddedGroup) = %d, want a multiple of 128", size)
+	}
+	if got, want := unsafe.Sizeof(Group[string, [64]byte]{}), unsafe.Sizeof(Group[struct{}, struct{}]{}); got != want {
+		t.Fatalf("Group size depends on type parameters: %d != %d", got, want)
 	}
 }
 
