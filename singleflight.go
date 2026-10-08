@@ -49,6 +49,10 @@ type call[V any] struct {
 // complete and receives the same result. A duplicate caller may return early if
 // its context is canceled before the original call completes.
 //
+// key must equal itself and be dynamically comparable. Do panics before
+// acquiring the bookkeeping lock if key contains NaN or an uncomparable
+// dynamic value, such as an interface containing a slice.
+//
 // fn must not synchronously call Do on the same Group with the same key. Such
 // a recursive call waits for fn to return, while fn waits for the recursive
 // call, causing a deadlock. A cancelable context can release the recursive
@@ -71,6 +75,11 @@ type call[V any] struct {
 // original panic value directly. If fn calls runtime.Goexit, Do calls
 // runtime.Goexit in every participating caller.
 func (g *Group[K, V]) Do(ctx context.Context, key K, fn func(context.Context) (V, error)) (v V, err error, shared bool) {
+	// Validate before locking: NaN keys cannot be deleted from a map, and
+	// interface keys containing uncomparable values can panic during lookup.
+	if key != key {
+		panic("singleflight: key must equal itself")
+	}
 	g.mu.Lock()
 	if g.m == nil {
 		g.m = make(map[K]*call[V])
@@ -129,30 +138,38 @@ func (g *Group[K, V]) wait(ctx context.Context, c *call[V], done <-chan struct{}
 
 func (g *Group[K, V]) doCall(ctx context.Context, key K, fn func(context.Context) (V, error)) (v V, err error, shared bool) {
 	normalReturn := false
+	recovered := false
 
 	defer func() {
-		if !normalReturn {
-			if r := recover(); r != nil {
-				err = newPanicError(r)
-			} else {
-				err = errGoexit
-			}
+		if !normalReturn && !recovered {
+			err = errGoexit
 		}
 
-		shared = g.finish(key, v, err, !normalReturn)
+		shared = g.finish(key, &v, err, !normalReturn)
 
 		if !normalReturn {
 			replay(err)
 		}
 	}()
 
-	v, err = fn(ctx)
-	normalReturn = true
+	func() {
+		defer func() {
+			if !normalReturn {
+				// Capture the stack before unwinding, even when recover returns
+				// nil. With GODEBUG=panicnil=1, that can mean panic(nil).
+				err = newPanicError(recover())
+			}
+		}()
+		v, err = fn(ctx)
+		normalReturn = true
+	}()
+	// A recovered panic returns from the inner function; Goexit does not.
+	recovered = !normalReturn
 
 	return v, err, false
 }
 
-func (g *Group[K, V]) finish(key K, v V, err error, aborted bool) bool {
+func (g *Group[K, V]) finish(key K, v *V, err error, aborted bool) bool {
 	g.mu.Lock()
 	var c *call[V]
 	if g.m != nil {
@@ -162,7 +179,7 @@ func (g *Group[K, V]) finish(key K, v V, err error, aborted bool) bool {
 
 	shared := false
 	if c != nil {
-		c.val = v
+		c.val = *v
 		c.err = err
 		c.aborted = aborted
 		shared = c.waiters > 0

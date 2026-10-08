@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   checks:
-    name: Checks
+    name: Check
     runs-on: ubuntu-latest
 
     steps:
@@ -22,7 +22,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.26.x
+          go-version: '1.27.x'
+          check-latest: true
           cache: true
           cache-dependency-path: go.mod
 
@@ -37,11 +38,17 @@ jobs:
 
       - name: Run staticcheck
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
           "$(go env GOPATH)/bin/staticcheck" ./...
+
+      - name: Run vet
+        run: go vet ./...
 
       - name: Run tests
         run: go test ./...
+
+      - name: Run race tests
+        run: go test -race -count=10 ./...
 
   benchmarks:
     name: Benchmark comparison
@@ -66,7 +73,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: 1.26.x
+          go-version: '1.27.x'
+          check-latest: true
           cache: true
           cache-dependency-path: |
             base/go.mod

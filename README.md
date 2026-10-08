@@ -113,6 +113,11 @@ var group singleflight.Group[string, User]
 `Do` guarantees that only one `fn` is in flight for a given key at a time.
 Different keys may run independently.
 
+Each key must equal itself and be dynamically comparable. `Do` panics for NaN
+keys, structs or arrays that contain NaN, and interface keys that contain
+uncomparable values such as slices or maps. These panics do not leave the group
+locked or register an in-flight call.
+
 ```go
 value, err, shared := group.Do(ctx, key, func(ctx context.Context) (Value, error) {
 	return load(ctx, key)
@@ -224,7 +229,8 @@ captures its stack, and panics with a `*singleflight.PanicError` for both the
 caller that ran `fn` and all waiting duplicate callers. Use `Value` to inspect
 the original panic value and `Stack` to inspect the captured stack. If `fn`
 calls `runtime.Goexit`, `Do` calls `runtime.Goexit` in every participating
-caller.
+caller. This also applies to `panic(nil)` when `GODEBUG=panicnil=1` enables
+legacy Go behavior; `PanicError.Value()` returns nil in that case.
 
 ## Comparison With `x/sync/singleflight`
 
@@ -257,6 +263,17 @@ comparison with:
 ```sh
 GOMAXPROCS=10 go test -run='^$' \
   -bench='(DoUncontended|DoSameKeySequential|DoHotKeyParallel|DoManyKeysParallel)$' \
+  -benchmem -count=3
+```
+
+Additional benchmarks cover worker-local keys without a shared per-call
+counter, blocked-leader fan-out, large result values, and both pre-canceled and
+actively waiting duplicates. The pre-canceled benchmark excludes context
+creation costs. Run these workloads with:
+
+```sh
+go test -run='^$' \
+  -bench='(DoWorkerLocalKeysParallel|DoFanOut|DoLargeValue|CanceledDuplicate|WaitingDuplicateCancellation)' \
   -benchmem -count=3
 ```
 
