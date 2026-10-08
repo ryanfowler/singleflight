@@ -51,7 +51,7 @@ for this package's context-aware waiting.
 go get github.com/ryanfowler/singleflight
 ```
 
-`singleflight` requires Go 1.24 or newer.
+`singleflight` requires Go 1.26 or newer.
 
 ## Quick Start
 
