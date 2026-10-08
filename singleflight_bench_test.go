@@ -174,11 +174,11 @@ func BenchmarkCanceledDuplicate(b *testing.B) {
 		}()
 		<-leaderStarted
 
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			canceled, cancel := context.WithCancel(ctx)
-			cancel()
 			_, err, shared := g.Do(canceled, "key", func(context.Context) (int, error) {
 				return 2, nil
 			})
@@ -207,11 +207,11 @@ func BenchmarkCanceledDuplicate(b *testing.B) {
 		}()
 		<-leaderStarted
 
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			canceled, cancel := context.WithCancel(ctx)
-			cancel()
 			_, err, shared := g.Do(canceled, "key", func(context.Context) (int, error) {
 				return 2, nil
 			})

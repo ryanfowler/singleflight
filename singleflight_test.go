@@ -579,8 +579,19 @@ func TestPanicNilReplay(t *testing.T) {
 	waitForWaiters(t, &g, "key", 1)
 	close(release)
 
-	assertPanicError(t, receiveAny(t, leaderPanic), "panic called with nil argument")
-	assertPanicError(t, receiveAny(t, duplicatePanic), "panic called with nil argument")
+	leader := receiveAny(t, leaderPanic)
+	duplicate := receiveAny(t, duplicatePanic)
+	for _, recovered := range []any{leader, duplicate} {
+		if p, ok := recovered.(*PanicError); ok && p.Value() == nil {
+			// GODEBUG=panicnil=1 preserves a nil panic value.
+			assertPanicError(t, recovered, "<nil>")
+		} else {
+			assertPanicError(t, recovered, "panic called with nil argument")
+		}
+	}
+	if leader != duplicate {
+		t.Fatal("callers received different PanicError values")
+	}
 }
 
 // A *PanicError returned by fn as an ordinary error, such as one recovered
@@ -786,7 +797,7 @@ func TestManyIndependentKeys(t *testing.T) {
 	}
 }
 
-func waitForWaiters[K comparable, V any](t *testing.T, g *Group[K, V], key K, want int) {
+func waitForWaiters[K comparable, V any](t testing.TB, g *Group[K, V], key K, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
