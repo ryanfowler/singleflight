@@ -245,8 +245,8 @@ such as `DoChan`, `Forget`, or the public `Result` type.
 ### Benchmarks
 
 The repository benchmarks equivalent `Do` workloads against
-`golang.org/x/sync/singleflight` v0.16.0. Representative medians from three
-runs on an Apple M2 Pro with Go 1.26.5 (`GOMAXPROCS=10`) are:
+`golang.org/x/sync/singleflight` v0.23.0. Representative medians from three
+runs against v0.16.0 on an Apple M2 Pro with Go 1.26.5 (`GOMAXPROCS=10`) are:
 
 | Workload | Group | ShardedGroup (32) | x/sync Group |
 | --- | ---: | ---: | ---: |

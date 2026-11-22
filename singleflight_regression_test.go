@@ -129,6 +129,65 @@ func TestPreCanceledDuplicateDoesNotJoin(t *testing.T) {
 	}
 }
 
+// panicErrContext is a Context whose Err method panics.
+type panicErrContext struct{ context.Context }
+
+func (panicErrContext) Err() error { panic("Err panicked") }
+
+func TestPanickingContextDoesNotPoisonGroup(t *testing.T) {
+	contexts := map[string]context.Context{
+		"PanickingErr": panicErrContext{context.Background()},
+		"Nil":          nil,
+	}
+	for ctxName, badCtx := range contexts {
+		for name, g := range testGroups[string, int]() {
+			t.Run(name+"/"+ctxName, func(t *testing.T) {
+				started := make(chan struct{})
+				release := make(chan struct{})
+				leaderDone := make(chan doResult[int], 1)
+				go func() {
+					v, err, shared := g.Do(context.Background(), "key", func(context.Context) (int, error) {
+						close(started)
+						<-release
+						return 42, nil
+					})
+					leaderDone <- doResult[int]{v, err, shared}
+				}()
+				<-started
+
+				// The bad context joins as a duplicate of the in-flight call.
+				var panicked any
+				func() {
+					defer func() { panicked = recover() }()
+					g.Do(badCtx, "key", func(context.Context) (int, error) {
+						t.Error("duplicate with bad context ran fn")
+						return 0, nil
+					})
+				}()
+				if panicked == nil {
+					t.Fatal("Do with bad context did not panic")
+				}
+
+				close(release)
+				if got := receiveResult(t, leaderDone); got.val != 42 || got.err != nil || got.shared {
+					t.Fatalf("leader after bad context = %#v", got)
+				}
+
+				results := make(chan doResult[int], 1)
+				go func() {
+					v, err, shared := g.Do(context.Background(), "other", func(context.Context) (int, error) {
+						return 7, nil
+					})
+					results <- doResult[int]{v, err, shared}
+				}()
+				if got := receiveResult(t, results); got.val != 7 || got.err != nil || got.shared {
+					t.Fatalf("call after bad context = %#v", got)
+				}
+			})
+		}
+	}
+}
+
 func TestLeaderCancellationIsShared(t *testing.T) {
 	for name, g := range testGroups[string, int]() {
 		t.Run(name, func(t *testing.T) {
