@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
+	"math/bits"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -80,15 +81,18 @@ func (g *Group[K, V]) Do(ctx context.Context, key K, fn func(context.Context) (V
 	if key != key {
 		panic("singleflight: key must equal itself")
 	}
+	// Read ctx.Err before locking: it is caller code that can panic (for
+	// example, with a nil ctx) and must not leave the mutex locked.
+	ctxErr := ctx.Err()
 	g.mu.Lock()
 	if g.m == nil {
 		g.m = make(map[K]*call[V])
 	}
 	if c, ok := g.m[key]; ok {
-		if err := ctx.Err(); err != nil {
+		if ctxErr != nil {
 			g.mu.Unlock()
 			var zero V
-			return zero, err, true
+			return zero, ctxErr, true
 		}
 		if c == nil {
 			c = &call[V]{
@@ -271,7 +275,9 @@ func (g *ShardedGroup[K, V]) groupFor(key K) *Group[K, V] {
 			state.shards = make([]paddedGroup[K, V], defaultShardCount)
 		}
 	})
-	return &state.shards[maphash.Comparable(state.seed, key)%uint64(len(state.shards))].Group
+	// Multiply-shift maps the hash uniformly onto [0, len) without a divide.
+	i, _ := bits.Mul64(maphash.Comparable(state.seed, key), uint64(len(state.shards)))
+	return &state.shards[i].Group
 }
 
 // replay re-raises an aborted call's panic or runtime.Goexit. It must only be
